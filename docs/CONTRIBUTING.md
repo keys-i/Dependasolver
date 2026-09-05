@@ -8,4 +8,4 @@ Run the test suite before opening a pull request:
 python3 -m unittest discover -s tests -v
 ```
 
-For workflow changes, also run `actionlint .github/workflows/*.yml`. Open a pull request with a clear summary, test results, and any relevant issue link. Contributions are accepted under the [MIT License](LICENSE).
+For workflow changes, also run `actionlint .github/workflows/*.yml`. Open a pull request with a clear summary, test results, and any relevant issue link. Contributions are accepted under the [MIT License](../LICENSE).
