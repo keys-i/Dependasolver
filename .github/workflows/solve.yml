@@ -1,4 +1,4 @@
-name: Dependasolver
+name: bRad dependency solver
 
 on:
   workflow_call:
@@ -77,3 +77,20 @@ jobs:
           GH_TOKEN="${APP_TOKEN:?Missing GitHub App installation token}" gh api "repos/$GH_REPO/branches/$branch/protection" |
             jq -e --argjson required "$REQUIRED_CHECKS" '($required | type == "array" and length > 0 and all(.[]; type == "string" and test("\\S"))) and .enforce_admins.enabled == true and (.required_status_checks | .strict == true and ([.contexts[]?, .checks[]?.context] | unique | contains($required)))' > /dev/null
           gh pr merge "$PR_URL" --auto --squash --match-head-commit "$HEAD_SHA"
+      - name: Explain low compatibility score
+        if: fromJSON(steps.metadata.outputs.compatibility-score || '0') < 80
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          SCORE: ${{ steps.metadata.outputs.compatibility-score || 'unknown' }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type || 'unknown' }}
+          MAINTAINER_CHANGES: ${{ steps.metadata.outputs.maintainer-changes || 'unknown' }}
+        run: |
+          set -euo pipefail
+          marker='<!-- brad-compatibility-review -->'
+          if gh pr view "$PR_URL" --json comments --jq '.comments[].body' | grep -Fq "$marker"; then
+            exit 0
+          fi
+          body=$(printf '%s\n' "$marker" '### bRad compatibility review' '' "This Dependabot update scored **$SCORE/100**, below bRad's 80-point review threshold, so auto-merge is disabled." '' "- Update type: \`$UPDATE_TYPE\`" "- Maintainer changes: \`$MAINTAINER_CHANGES\`" '' 'Review the release notes and required CI checks before merging manually.')
+          gh pr comment "$PR_URL" --body "$body"
