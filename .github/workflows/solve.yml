@@ -1,0 +1,79 @@
+name: Dependasolver
+
+on:
+  workflow_call:
+    inputs:
+      app-client-id:
+        required: true
+        type: string
+      required-checks:
+        description: JSON array of required CI check names
+        required: true
+        type: string
+    secrets:
+      app-private-key:
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: dependasolver-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  auto-merge:
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # This privileged workflow never checks out or executes PR code.
+      - name: Clear previous auto-merge approval
+        if: github.event.pull_request.auto_merge != null
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge "$PR_URL" --disable-auto
+      - name: Create repository-scoped GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ inputs.app-client-id }}
+          private-key: ${{ secrets.app-private-key }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: read
+          permission-pull-requests: read
+      - name: Fetch verified Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          compat-lookup: true
+          github-token: ${{ steps.app-token.outputs.token }}
+      - name: Require protected checks and enable auto-merge
+        if: >-
+          fromJSON(steps.metadata.outputs.compatibility-score || '0') >= 95 &&
+          fromJSON(steps.metadata.outputs.compatibility-score || '0') <= 100 &&
+          contains(fromJSON('["version-update:semver-patch","version-update:semver-minor"]'), steps.metadata.outputs.update-type) &&
+          steps.metadata.outputs.maintainer-changes == 'false'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REQUIRED_CHECKS: ${{ inputs.required-checks }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          branch=$(jq -rn --arg branch "$BASE_BRANCH" '$branch | @uri')
+          GH_TOKEN="${APP_TOKEN:?Missing GitHub App installation token}" gh api "repos/$GH_REPO/branches/$branch/protection" |
+            jq -e --argjson required "$REQUIRED_CHECKS" '($required | type == "array" and length > 0 and all(.[]; type == "string" and test("\\S"))) and .enforce_admins.enabled == true and (.required_status_checks | .strict == true and ([.contexts[]?, .checks[]?.context] | unique | contains($required)))' > /dev/null
+          gh pr merge "$PR_URL" --auto --squash --match-head-commit "$HEAD_SHA"
