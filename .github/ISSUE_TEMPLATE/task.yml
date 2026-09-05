@@ -1,0 +1,23 @@
+name: Task
+description: Track a bounded maintenance task.
+title: "Task: "
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Intended outcome
+      description: State the concrete result.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What must be true when this is complete?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Relevant links, constraints, or prior work.

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>$title · Dependasolver</title>
+  <style nonce="$nonce">
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: grid; place-items: center;
+      padding: 24px; background: #e6f4eb; color: #182a28;
+      font: 16px/1.6 system-ui, sans-serif;
+    }
+    main { width: 100%; max-width: 480px; padding: 40px; background: #fffdf8; border-radius: 28px; }
+    img { display: block; width: 96px; height: 96px; border-radius: 24px; margin-bottom: 24px; }
+    .brand { margin: 0 0 8px; font-size: 13px; font-weight: 650; letter-spacing: .04em; }
+    h1 { margin: 0 0 16px; font-size: clamp(26px, 5vw, 32px); line-height: 1.15; letter-spacing: -.035em; }
+    p { margin: 0 0 20px; }
+    strong { overflow-wrap: anywhere; }
+    dl { margin: 24px 0; padding: 16px 0; border-block: 1px solid #d7e1dc; }
+    dl div { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; }
+    dd { margin: 0; color: #465c55; }
+    button {
+      width: 100%; min-height: 48px; padding: 12px 20px; border: 0; border-radius: 12px;
+      background: #183e31; color: white; font: inherit; font-weight: 650; cursor: pointer;
+    }
+    button:hover { background: #24523f; }
+    button:focus-visible { outline: 3px solid #527c5d; outline-offset: 4px; }
+    .note { margin: 16px 0 0; color: #465c55; font-size: 14px; }
+    @media (max-width: 380px) { main { padding: 24px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <img src="data:image/png;base64,$logo" alt="Smiling Dependasolver mascot" width="96" height="96">
+    <p class="brand">DEPENDASOLVER</p>
+    <h1>$title</h1>
+    $content
+  </main>
+</body>
+</html>

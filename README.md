@@ -19,6 +19,9 @@ This previews setup. Add `--apply` to run it, then complete GitHub's App prompts
 for the target repository. Publish the generated `.github/workflows/dependasolver.yml`
 to activate it. Use `--directory PATH` for another local checkout.
 
+For the smiling App badge, upload [assets/dependasolver.png](assets/dependasolver.png)
+under your GitHub App's **Display information → Upload a logo**.
+
 Setup stores App credentials, enables auto-merge, and requires up-to-date checks.
 Existing protection and Dependabot configuration are preserved; reruns reuse credentials.
 Classic branch protection is required. If GitHub rejects adding status checks to
@@ -31,4 +34,4 @@ maintainer changes qualify. Required checks and reviews still apply.
 
 Check locally: `python3 -m unittest discover -s tests -v`.
 
-License: [GPL-3.0-only](LICENSE).
+License: [MIT](LICENSE).

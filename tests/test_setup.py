@@ -8,8 +8,9 @@ import stat
 import subprocess
 import tempfile
 import unittest
+from html.parser import HTMLParser
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("dependasolver_setup", ROOT / "setup.py")
@@ -21,6 +22,60 @@ APP = {"client_id": "Iv1.fixture", "pem": PEM, "slug": "dependasolver-fixture"}
 
 
 class SetupTest(unittest.TestCase):
+    def test_registration_form_and_callback_keep_browser_boundaries(self):
+        tags = []
+
+        class Page(HTMLParser):
+            def handle_starttag(self, tag, attrs):
+                tags.append((tag, dict(attrs)))
+
+        requests = []
+        callback = None
+        with (patch.object(setup, "HTTPServer") as listener,
+              patch.object(setup.webbrowser, "open") as browser,
+              patch.object(setup, "convert_manifest", return_value=APP) as convert,
+              contextlib.redirect_stdout(io.StringIO())):
+            server = listener.return_value.__enter__.return_value
+            server.server_port = 1234
+
+            def request():
+                nonlocal callback
+                path = setup.urllib.parse.urlsplit(browser.call_args.args[0]).path if not requests else callback
+                host = "attacker.invalid" if len(requests) == 1 else "127.0.0.1:1234"
+                connection = Mock()
+                connection.makefile.return_value = io.BytesIO(
+                    f"GET {path} HTTP/1.1\r\nHost: {host}\r\n\r\n".encode())
+                chunks = []
+                connection.sendall.side_effect = chunks.append
+                listener.call_args.args[1](connection, ("127.0.0.1", 4321), server)
+                response = b"".join(chunks).decode()
+                requests.append(response)
+                if len(requests) == 1:
+                    headers, body = response.split("\r\n\r\n", 1)
+                    Page().feed(body)
+                    form = next(attrs for tag, attrs in tags if tag == "form")
+                    field = next(attrs for tag, attrs in tags if tag == "input")
+                    style = next(attrs for tag, attrs in tags if tag == "style")
+                    self.assertEqual(form["method"], "post")
+                    self.assertTrue(form["action"].startswith("https://github.com/organizations/owner/settings/apps/new?"))
+                    self.assertEqual(field["name"], "manifest")
+                    data = json.loads(field["value"])
+                    self.assertEqual(data["default_permissions"], setup.PERMISSIONS)
+                    self.assertIn("style-src 'nonce-" + style["nonce"] + "'", headers)
+                    self.assertIn("default-src 'none'", headers)
+                    self.assertNotIn("'unsafe-inline'", headers)
+                    self.assertFalse(any(tag == "script" for tag, _ in tags))
+                    state = setup.urllib.parse.parse_qs(setup.urllib.parse.urlsplit(form["action"]).query)["state"][0]
+                    callback = setup.urllib.parse.urlsplit(data["redirect_url"]).path + "?state=" + state + "&code=" + "a" * 40
+
+            server.handle_request.side_effect = request
+            self.assertEqual(setup.register_app("owner/repo", "Organization"), APP)
+            convert.assert_called_once_with("a" * 40)
+        self.assertIn("200 OK", requests[0])
+        self.assertIn("400 Bad Request", requests[1])
+        self.assertIn("App registered", requests[2])
+        self.assertNotIn("<script>", setup.setup_page("<script>", "<p>Ready</p>", "fixture"))
+
     def test_validation_and_preview_have_no_side_effects(self):
         for value in ("repo", "owner/..", "owner/repo/extra", "owner/repo;cmd", "owner/repo\n"):
             with self.assertRaises(argparse.ArgumentTypeError):

@@ -1,0 +1,30 @@
+name: Bug report
+description: Report a reproducible problem.
+title: "Bug: "
+body:
+  - type: markdown
+    attributes:
+      value: "For security vulnerabilities, use the repository Security tab and **Report a vulnerability** instead of this form."
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. ...\n2. ...\n3. ..."
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit

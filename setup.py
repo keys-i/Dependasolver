@@ -2,6 +2,7 @@
 """Preview or install Dependasolver without a manually supplied PAT."""
 
 import argparse
+import base64
 import html
 import json
 import os
@@ -16,6 +17,7 @@ import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from string import Template
 
 ROOT = Path(__file__).resolve().parent
 CLIENT_ID = "DEPENDASOLVER_APP_CLIENT_ID"
@@ -131,7 +133,7 @@ def manifest(repo, callback, name):
     return {
         "name": name,
         "url": f"https://github.com/{repo}",
-        "description": "Read-only authentication for Dependasolver dependency automation.",
+        "description": "Dependabot updates without the babysitting, with compatibility checks and passing CI before auto-merge.",
         "public": False,
         "hook_attributes": {"active": False, "url": f"https://github.com/{repo}"},
         "redirect_url": callback,
@@ -164,8 +166,16 @@ def convert_manifest(code):
         raise RuntimeError("Could not complete App registration. Retry from GitHub's App settings.") from None
 
 
+def setup_page(title, content, nonce):
+    return Template((ROOT / "templates/setup.html").read_text()).substitute(
+        title=html.escape(title), content=content, nonce=html.escape(nonce, quote=True),
+        logo=base64.b64encode((ROOT / "assets/dependasolver.png").read_bytes()).decode(),
+    )
+
+
 def register_app(repo, owner_type):
     state = secrets.token_urlsafe(32)
+    nonce = secrets.token_urlsafe(32)
     route = "/callback/" + secrets.token_urlsafe(24)
     start = "/start/" + secrets.token_urlsafe(24)
     code = None
@@ -191,29 +201,33 @@ def register_app(repo, owner_type):
                 except ValueError:
                     self.send_error(400)
                     return
-                body = "Registration received. Return to the terminal."
+                body = setup_page("App registered", "<p>Return to your terminal to finish installing Dependasolver.</p>", nonce)
             data = body.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("Referrer-Policy", "no-referrer")
-            self.send_header("Content-Security-Policy", "default-src 'none'; form-action https://github.com; frame-ancestors 'none'; base-uri 'none'")
+            self.send_header("Content-Security-Policy", f"default-src 'none'; img-src data:; style-src 'nonce-{nonce}'; form-action https://github.com; frame-ancestors 'none'; base-uri 'none'")
             self.end_headers()
             self.wfile.write(data)
 
     with HTTPServer(("127.0.0.1", 0), Handler) as server:
         host = f"127.0.0.1:{server.server_port}"
-        app_name = "Dependasolver-" + repo.split("/")[1][:12] + "-" + secrets.token_hex(3)
+        app_name = "Dependasolver " + repo.split("/")[1][:12] + " " + secrets.token_hex(3)
         settings = "settings/apps/new" if owner_type == "User" else f"organizations/{repo.split('/')[0]}/settings/apps/new"
         action = f"https://github.com/{settings}?state={urllib.parse.quote(state)}"
         config = manifest(repo, f"http://{host}{route}", app_name)
-        form = ("<!doctype html><title>Set up Dependasolver</title>"
-                "<h1>Set up Dependasolver</h1><p>Approve a private App with read-only "
-                "Administration and Pull requests permissions.</p>"
+        form = setup_page("Connect your repository", (
+                f"<p>Create a private GitHub App for <strong>{html.escape(repo)}</strong> "
+                "to check dependency updates before auto-merge.</p>"
+                "<dl><div><dt>Administration</dt><dd>Read-only</dd></div>"
+                "<div><dt>Pull requests</dt><dd>Read-only</dd></div></dl>"
+                "<p>Your CI checks and review requirements still apply.</p>"
                 f'<form method="post" action="{html.escape(action, quote=True)}">'
                 f'<input type="hidden" name="manifest" value="{html.escape(json.dumps(config), quote=True)}">'
-                '<button type="submit">Continue to GitHub</button></form>')
+                '<button type="submit">Continue to GitHub</button></form>'
+                '<p class="note">Select only this repository when GitHub asks where to install the App.</p>'), nonce)
         url = f"http://{host}{start}"
         print(f"Open {url} to approve App registration in GitHub.")
         webbrowser.open(url)
@@ -286,6 +300,7 @@ def install(repo, source, required, directory):
         with path.open("x") as file:
             file.write(content)
     print("Repository settings and App credentials are configured.")
+    print(f"To add the smiling App badge, upload {ROOT / 'assets/dependasolver.png'} in the App's Display information settings.")
     print("Publish .github/workflows/dependasolver.yml to activate the solver.")
     print("The first workflow run verifies the App installation and protected checks.")
 
