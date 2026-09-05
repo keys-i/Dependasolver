@@ -18,63 +18,70 @@ setup = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(setup)
 SOURCE = ("owner/dependasolver", "a" * 40)
 PEM = "-----BEGIN PRIVATE KEY-----\nfixture-only\n-----END PRIVATE KEY-----\n"
-APP = {"client_id": "Iv1.fixture", "pem": PEM, "slug": "dependasolver-fixture"}
+APP = {"client_id": "Iv1.fixture", "pem": PEM, "slug": "rady-fixture", "owner": {"login": "keys-i"}, "permissions": setup.PERMISSIONS}
 
 
 class SetupTest(unittest.TestCase):
     def test_registration_form_and_callback_keep_browser_boundaries(self):
-        tags = []
+        for owner_type in ("User", "Organization"):
+            tags = []
 
-        class Page(HTMLParser):
-            def handle_starttag(self, tag, attrs):
-                tags.append((tag, dict(attrs)))
+            class Page(HTMLParser):
+                def handle_starttag(self, tag, attrs):
+                    tags.append((tag, dict(attrs)))
 
-        requests = []
-        callback = None
-        with (patch.object(setup, "HTTPServer") as listener,
-              patch.object(setup.webbrowser, "open") as browser,
-              patch.object(setup, "convert_manifest", return_value=APP) as convert,
-              contextlib.redirect_stdout(io.StringIO())):
-            server = listener.return_value.__enter__.return_value
-            server.server_port = 1234
+            requests = []
+            callback = None
+            with (patch.object(setup, "HTTPServer") as listener,
+                  patch.object(setup, "api", return_value={"type": owner_type, "login": "keys-i"}) as api,
+                  patch.object(setup.webbrowser, "open") as browser,
+                  patch.object(setup, "convert_manifest", return_value=APP) as convert,
+                  contextlib.redirect_stdout(io.StringIO())):
+                server = listener.return_value.__enter__.return_value
+                server.server_port = 1234
 
-            def request():
-                nonlocal callback
-                path = setup.urllib.parse.urlsplit(browser.call_args.args[0]).path if not requests else callback
-                host = "attacker.invalid" if len(requests) == 1 else "127.0.0.1:1234"
-                connection = Mock()
-                connection.makefile.return_value = io.BytesIO(
-                    f"GET {path} HTTP/1.1\r\nHost: {host}\r\n\r\n".encode())
-                chunks = []
-                connection.sendall.side_effect = chunks.append
-                listener.call_args.args[1](connection, ("127.0.0.1", 4321), server)
-                response = b"".join(chunks).decode()
-                requests.append(response)
-                if len(requests) == 1:
-                    headers, body = response.split("\r\n\r\n", 1)
-                    Page().feed(body)
-                    form = next(attrs for tag, attrs in tags if tag == "form")
-                    field = next(attrs for tag, attrs in tags if tag == "input")
-                    style = next(attrs for tag, attrs in tags if tag == "style")
-                    self.assertEqual(form["method"], "post")
-                    self.assertTrue(form["action"].startswith("https://github.com/organizations/owner/settings/apps/new?"))
-                    self.assertEqual(field["name"], "manifest")
-                    data = json.loads(field["value"])
-                    self.assertEqual(data["default_permissions"], setup.PERMISSIONS)
-                    self.assertIn("style-src 'nonce-" + style["nonce"] + "'", headers)
-                    self.assertIn("default-src 'none'", headers)
-                    self.assertNotIn("'unsafe-inline'", headers)
-                    self.assertFalse(any(tag == "script" for tag, _ in tags))
-                    state = setup.urllib.parse.parse_qs(setup.urllib.parse.urlsplit(form["action"]).query)["state"][0]
-                    callback = setup.urllib.parse.urlsplit(data["redirect_url"]).path + "?state=" + state + "&code=" + "a" * 40
+                def request():
+                    nonlocal callback
+                    path = setup.urllib.parse.urlsplit(browser.call_args.args[0]).path if not requests else callback
+                    host = "attacker.invalid" if len(requests) == 1 else "127.0.0.1:1234"
+                    connection = Mock()
+                    connection.makefile.return_value = io.BytesIO(
+                        f"GET {path} HTTP/1.1\r\nHost: {host}\r\n\r\n".encode())
+                    chunks = []
+                    connection.sendall.side_effect = chunks.append
+                    listener.call_args.args[1](connection, ("127.0.0.1", 4321), server)
+                    response = b"".join(chunks).decode()
+                    requests.append(response)
+                    if len(requests) == 1:
+                        headers, body = response.split("\r\n\r\n", 1)
+                        Page().feed(body)
+                        form = next(attrs for tag, attrs in tags if tag == "form")
+                        field = next(attrs for tag, attrs in tags if tag == "input")
+                        style = next(attrs for tag, attrs in tags if tag == "style")
+                        self.assertEqual(form["method"], "post")
+                        route = "settings/apps/new" if owner_type == "User" else "organizations/keys-i/settings/apps/new"
+                        self.assertTrue(form["action"].startswith(f"https://github.com/{route}?"))
+                        self.assertIn("owned by <strong>keys-i</strong>", body)
+                        self.assertEqual(field["name"], "manifest")
+                        data = json.loads(field["value"])
+                        self.assertEqual(data["default_permissions"], setup.PERMISSIONS)
+                        self.assertTrue(data["public"])
+                        self.assertIn("style-src 'nonce-" + style["nonce"] + "'", headers)
+                        self.assertIn("default-src 'none'", headers)
+                        self.assertNotIn("'unsafe-inline'", headers)
+                        self.assertFalse(any(tag == "script" for tag, _ in tags))
+                        state = setup.urllib.parse.parse_qs(setup.urllib.parse.urlsplit(form["action"]).query)["state"][0]
+                        callback = setup.urllib.parse.urlsplit(data["redirect_url"]).path + "?state=" + state + "&code=" + "a" * 40
 
-            server.handle_request.side_effect = request
-            self.assertEqual(setup.register_app("owner/repo", "Organization"), APP)
-            convert.assert_called_once_with("a" * 40)
-        self.assertIn("200 OK", requests[0])
-        self.assertIn("400 Bad Request", requests[1])
-        self.assertIn("App registered", requests[2])
-        self.assertNotIn("<script>", setup.setup_page("<script>", "<p>Ready</p>", "fixture"))
+                server.handle_request.side_effect = request
+                self.assertEqual(setup.register_app("owner/repo"), APP)
+                convert.assert_called_once_with("a" * 40)
+                self.assertEqual([call.args[0] for call in api.call_args_list],
+                                 ["users/keys-i", "user"] if owner_type == "User" else ["users/keys-i"])
+            self.assertIn("200 OK", requests[0])
+            self.assertIn("400 Bad Request", requests[1])
+            self.assertIn("App registered", requests[2])
+            self.assertNotIn("<script>", setup.setup_page("<script>", "<p>Ready</p>", "fixture"))
 
     def test_validation_and_preview_have_no_side_effects(self):
         for value in ("repo", "owner/..", "owner/repo/extra", "owner/repo;cmd", "owner/repo\n"):
@@ -94,10 +101,13 @@ class SetupTest(unittest.TestCase):
                   patch.object(setup.urllib.request, "urlopen", side_effect=AssertionError("network")),
                   contextlib.redirect_stdout(output)):
                 code = setup.main(["--repo", "owner/repo", "--solver-ref", "@".join(SOURCE),
-                                   "--checks", "test", "audit", "--directory", directory])
+                                   "--checks", "test", "audit", "--directory", directory, "--new-app"])
             self.assertEqual(code, 0)
             self.assertEqual(list(Path(directory).iterdir()), [])
             self.assertIn('"apply": false', output.getvalue())
+            self.assertIn('"app_owner": "keys-i"', output.getvalue())
+            self.assertIn('"app_public": true', output.getvalue())
+            self.assertIn('"new_app": true', output.getvalue())
 
     def test_files_preserve_config_and_reject_escape_or_overwrite(self):
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
@@ -123,6 +133,44 @@ class SetupTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 setup.local_files(root, SOURCE, ["test"])
             self.assertEqual(list(Path(outside).iterdir()), [])
+
+    def test_new_app_bypasses_stale_entries_and_preserves_them_if_registration_fails(self):
+        for registration_fails in (False, True):
+            with tempfile.TemporaryDirectory() as directory:
+                calls = []
+                def api(endpoint, **kwargs):
+                    calls.append((endpoint, kwargs))
+                    if kwargs.get("method", "GET") != "GET":
+                        return {}
+                    if endpoint == "repos/owner/repo":
+                        return {"full_name": "owner/repo", "permissions": {"admin": True},
+                                "owner": {"type": "Organization"}, "default_branch": "main"}
+                    if "/contents/" in endpoint:
+                        return {"type": "file"}
+                    if endpoint.endswith("/protection"):
+                        return None
+                    raise AssertionError("Fresh registration must not look up old credential entries or an App slug.")
+                with (patch.object(setup, "api", side_effect=api),
+                      patch.object(setup, "register_app", return_value=APP,
+                                   side_effect=RuntimeError("registration cancelled") if registration_fails else None) as register,
+                      patch.object(setup, "gh") as gh,
+                      patch.object(setup, "public_app", side_effect=AssertionError("existing App lookup")),
+                      patch.object(setup.webbrowser, "open"), patch("builtins.input", return_value=""),
+                      contextlib.redirect_stdout(io.StringIO())):
+                    result = setup.main(["--repo", "owner/repo", "--solver-ref", "@".join(SOURCE),
+                                         "--checks", "test", "--directory", directory, "--new-app", "--apply"])
+                    register.assert_called_once_with("owner/repo")
+                    if registration_fails:
+                        self.assertEqual(result, 1)
+                        gh.assert_not_called()
+                        self.assertTrue(all(kwargs.get("method", "GET") == "GET" for _, kwargs in calls))
+                        self.assertEqual(list(Path(directory).iterdir()), [])
+                    else:
+                        self.assertEqual(result, 0)
+                        self.assertEqual([call.args[0][2] for call in gh.call_args_list],
+                                         [setup.PRIVATE_KEY, setup.CLIENT_ID, setup.APP_SLUG])
+                        self.assertEqual(gh.call_args_list[0].kwargs["data"], PEM)
+                        self.assertTrue((Path(directory) / ".github/workflows/dependasolver.yml").is_file())
 
     def test_protection_merges_bindings_without_replacing_other_rules(self):
         protection = {
@@ -155,8 +203,8 @@ class SetupTest(unittest.TestCase):
 
     def test_manifest_callback_and_secret_routing(self):
         data = setup.manifest("owner/repo", "http://127.0.0.1:1234/callback", "fixture")
-        self.assertEqual(data["default_permissions"], {"administration": "read", "pull_requests": "read"})
-        self.assertFalse(data["public"])
+        self.assertEqual(data["default_permissions"], setup.PERMISSIONS)
+        self.assertTrue(data["public"])
         self.assertFalse(data["hook_attributes"]["active"])
         self.assertEqual(data["default_events"], [])
         valid = "/callback?state=expected&code=" + "a" * 40
@@ -175,8 +223,26 @@ class SetupTest(unittest.TestCase):
         self.assertEqual(gh.call_args_list[0].kwargs["data"], PEM)
         self.assertNotIn(PEM, str(gh.call_args_list[0].args))
         self.assertEqual(gh.call_args_list[1].args[0][-1], APP["client_id"])
-        browser.assert_called_once_with("https://github.com/apps/dependasolver-fixture/installations/new")
+        self.assertEqual(gh.call_args_list[2].args[0],
+                         ["variable", "set", setup.APP_SLUG, "--repo", "owner/repo", "--body", APP["slug"]])
+        browser.assert_called_once_with("https://github.com/apps/rady-fixture/installations/new")
         self.assertNotIn(PEM, output.getvalue())
+
+    def test_rady_credentials_use_a_separate_namespace(self):
+        with (patch.object(setup, "gh") as gh,
+              patch.object(setup.webbrowser, "open"), patch("builtins.input", return_value=""),
+              contextlib.redirect_stdout(io.StringIO())):
+            setup.credentials("owner/repo", APP, "rady")
+        self.assertEqual([call.args[0][2] for call in gh.call_args_list],
+                         ["RADY_APP_PRIVATE_KEY", "RADY_APP_CLIENT_ID", "RADY_APP_SLUG"])
+        self.assertEqual(gh.call_args_list[0].kwargs["data"], PEM)
+        self.assertIn("Rady", setup.setup_page("Ready", "", "fixture", "rady"))
+        with tempfile.TemporaryDirectory() as directory:
+            caller = setup.local_files(Path(directory), SOURCE, ["test"])[Path(directory).resolve() / ".github/workflows/dependasolver.yml"]
+        self.assertIn("solver-ref: " + "@".join(SOURCE), caller)
+        self.assertIn("vars.RADY_APP_CLIENT_ID", caller)
+        self.assertIn("secrets.OPENAI_API_KEY", caller)
+        self.assertNotIn("__SOURCE_REF__", caller)
 
     def test_failed_secret_upload_keeps_private_recovery_file(self):
         mkstemp = tempfile.mkstemp
@@ -225,8 +291,11 @@ class SetupTest(unittest.TestCase):
                     return {"type": "file"}
                 if endpoint.endswith("/protection"):
                     return next(protections)
-                return {"name": "existing", "value": "Iv1.existing"}
+                if endpoint.endswith(setup.APP_SLUG):
+                    return {"value": APP["slug"]}
+                return {"name": "existing", "value": APP["client_id"]}
             with (patch.object(setup, "api", side_effect=api),
+                  patch.object(setup, "public_app", return_value=APP),
                   patch.object(setup, "register_app", side_effect=AssertionError("existing App replaced")),
                   patch.object(setup, "gh", side_effect=AssertionError("real CLI")),
                   contextlib.redirect_stdout(io.StringIO())):
@@ -247,4 +316,74 @@ class SetupTest(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     setup.install("owner/repo", SOURCE, ["test"], directory)
                 register.assert_not_called()
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_wrong_app_owner_and_public_lookup_fail_before_mutations(self):
+        with (patch.object(setup, "gh") as gh, patch.object(setup.tempfile, "mkstemp") as recovery):
+            for owner in ({"login": "other"}, {}, None):
+                with self.assertRaisesRegex(RuntimeError, "registered under keys-i"):
+                    setup.credentials("owner/repo", {**APP, "owner": owner})
+            gh.assert_not_called()
+            recovery.assert_not_called()
+        with (patch.object(setup, "api", side_effect=[{"type": "User"}, {"login": "other"}]),
+              patch.object(setup, "HTTPServer") as listener):
+            with self.assertRaisesRegex(RuntimeError, "Sign in.*keys-i"):
+                setup.register_app("owner/repo")
+            listener.assert_not_called()
+        with patch.object(setup.urllib.request, "urlopen") as urlopen:
+            for slug in (None, "", "../elsewhere", "name?query"):
+                with self.assertRaisesRegex(RuntimeError, setup.APP_SLUG):
+                    setup.public_app(slug)
+            urlopen.assert_not_called()
+            urlopen.return_value.__enter__.return_value = io.BytesIO(json.dumps(APP).encode())
+            self.assertEqual(setup.public_app(APP["slug"]), APP)
+            request = urlopen.call_args.args[0]
+            self.assertEqual(request.full_url, "https://api.github.com/apps/" + APP["slug"])
+            self.assertIsNone(request.get_header("Authorization"))
+            urlopen.side_effect = setup.urllib.error.URLError(PEM)
+            with self.assertRaises(RuntimeError) as error:
+                setup.public_app(APP["slug"])
+            self.assertNotIn(PEM, str(error.exception))
+        for app in ({**APP, "owner": {"login": "other"}}, {**APP, "client_id": "different"}):
+            with tempfile.TemporaryDirectory() as directory:
+                calls = []
+                def api(endpoint, **kwargs):
+                    calls.append((endpoint, kwargs))
+                    if endpoint == "repos/owner/repo":
+                        return {"full_name": "owner/repo", "permissions": {"admin": True},
+                                "owner": {"type": "Organization"}, "default_branch": "main"}
+                    if "/contents/" in endpoint:
+                        return {"type": "file"}
+                    return {"value": APP["slug"] if endpoint.endswith(setup.APP_SLUG) else APP["client_id"]}
+                with (patch.object(setup, "api", side_effect=api),
+                      patch.object(setup, "public_app", return_value=app),
+                      patch.object(setup, "credentials") as credentials):
+                    with self.assertRaises(RuntimeError):
+                        setup.install("owner/repo", SOURCE, ["test"], directory)
+                    credentials.assert_not_called()
+                self.assertTrue(all(kwargs.get("method", "GET") == "GET" for _, kwargs in calls))
+                self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_missing_app_permissions_fail_before_mutations(self):
+        incomplete = {**APP, "permissions": {"administration": "read"}}
+        with (patch.object(setup, "gh") as gh, patch.object(setup.tempfile, "mkstemp") as recovery):
+            with self.assertRaisesRegex(RuntimeError, "Pull requests write"):
+                setup.credentials("owner/repo", incomplete)
+            gh.assert_not_called()
+            recovery.assert_not_called()
+        with tempfile.TemporaryDirectory() as directory:
+            calls = []
+            def api(endpoint, **kwargs):
+                calls.append((endpoint, kwargs))
+                if endpoint == "repos/owner/repo":
+                    return {"full_name": "owner/repo", "permissions": {"admin": True}, "owner": {"type": "Organization"}, "default_branch": "main"}
+                if "/contents/" in endpoint:
+                    return {"type": "file"}
+                return {"value": APP["slug"] if endpoint.endswith(setup.APP_SLUG) else APP["client_id"]}
+            with (patch.object(setup, "api", side_effect=api), patch.object(setup, "public_app", return_value=incomplete),
+                  patch.object(setup, "credentials") as credentials):
+                with self.assertRaisesRegex(RuntimeError, "approve the installation"):
+                    setup.install("owner/repo", SOURCE, ["test"], directory)
+                credentials.assert_not_called()
+            self.assertTrue(all(kwargs.get("method", "GET") == "GET" for _, kwargs in calls))
             self.assertEqual(list(Path(directory).iterdir()), [])

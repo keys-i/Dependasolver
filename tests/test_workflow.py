@@ -18,13 +18,15 @@ app_step = workflow.split("id: app-token\n", 1)[1].split("      - name:", 1)[0]
 assert "repositories: ${{ github.event.repository.name }}" in app_step
 assert dict(re.findall(r"^          permission-([\w-]+): (\w+)$", app_step, re.M)) == {
     "administration": "read",
-    "pull-requests": "read",
+    "pull-requests": "write",
+    "contents": "read", "checks": "read", "statuses": "read",
 }
 assert "skip-token-revoke" not in app_step
 assert "DEPENDABOT_COMPAT_TOKEN" not in workflow
 assert "github-token: ${{ steps.app-token.outputs.token }}" in workflow
 assert "APP_TOKEN: ${{ steps.app-token.outputs.token }}" in workflow
-script = dedent(workflow.split("        run: |\n", 1)[1])
+merge_step = workflow.split("      - name: Require protected checks and enable auto-merge", 1)[1]
+script = dedent(merge_step.split("        run: |\n", 1)[1])
 assert script.count("gh ") == 2
 contexts = ["build", "audit", "dependency-review"]
 
@@ -152,11 +154,12 @@ class WorkflowTest(unittest.TestCase):
 
         assert "github.event_name == 'pull_request_target'" in workflow
         assert "skip-verification" not in workflow and "skip-commit-verification" not in workflow
-        assert "actions/checkout" not in workflow
+        assert "ref: ${{ steps.source.outputs.sha }}" in workflow
+        assert "persist-credentials: false" in workflow
+        assert "steps.review.outputs.enable_auto_merge == 'true'" in merge_step
         assert "fromJSON(steps.metadata.outputs.compatibility-score || '0') >= 95" in workflow
         assert "fromJSON(steps.metadata.outputs.compatibility-score || '0') <= 100" in workflow
         assert "version-update:semver-major" not in workflow
         for path in WORKFLOWS.glob("*.yml"):
-            for action in re.findall(r"uses: ([^#\s]+)", path.read_text()):
+            for action in re.findall(r"^\s+(?:- )?uses: ([^#\s]+)", path.read_text(), re.M):
                 assert re.fullmatch(r"[^@]+@[0-9a-f]{40}", action), action
-

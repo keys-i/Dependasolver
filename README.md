@@ -1,37 +1,22 @@
-# Dependasolver
+# Dependasolver + Rady
 
-Dependabot auto-merge with GitHub App authentication. No PAT or hosted service.
+Dependasolver reviews Dependabot PRs and gates auto-merge, while Rady reviews other PRs and helps you code locally
 
-Requires Python 3.10+, `gh auth login --web`, repository admin access, and permission
-to register/install an App. CI must already provide the checks listed below.
-
-Publish this repository first, then replace `SOURCE_COMMIT` with its full commit SHA.
-From the repository you want to configure:
+Reviews use the actual diff and CI results, with specific findings and plain Australian English
 
 ```sh
-python3 ../dependasolver/setup.py \
-  --repo uqrealitylabs/eyslie \
-  --solver-ref uqrealitylabs/dependasolver@SOURCE_COMMIT \
-  --checks test audit dependency-review
+python3 setup.py --app dependasolver --repo OWNER/REPO \
+  --solver-ref keys-i/dependasolver@SOURCE_COMMIT --checks test audit dependency-review
 ```
 
-This previews setup. Add `--apply` to run it, then complete GitHub's App prompts
-for the target repository. Publish the generated `.github/workflows/dependasolver.yml`
-to activate it. Use `--directory PATH` for another local checkout.
+Use a published commit SHA, add `--apply`, then repeat with `--app rady` to register the second public App under **keys-i**. Requires Python 3.10+, GitHub CLI login and repository admin access. Publish the generated workflow and add the Actions secret `OPENAI_API_KEY` to enable reviews
 
-For the smiling App badge, upload [assets/dependasolver.png](assets/dependasolver.png)
-under your GitHub App's **Display information → Upload a logo**.
+For local coding, install [Codex CLI](https://developers.openai.com/codex/cli), run `codex login` or set `CODEX_API_KEY`, then
 
-Setup stores App credentials, enables auto-merge, and requires up-to-date checks.
-Existing protection and Dependabot configuration are preserved; reruns reuse credentials.
-Classic branch protection is required. If GitHub rejects adding status checks to
-existing protection that has none, enable required checks in branch settings and rerun.
-Failed credential uploads retain a private recovery key at the printed path;
-complete both Actions credentials before retrying.
+```sh
+python3 /path/to/dependasolver/rady.py code "Fix the failing tests" --directory /path/to/project
+```
 
-Only verified Dependabot minor/patch updates with 95–100% compatibility and no
-maintainer changes qualify. Required checks and reviews still apply.
+Coding changes stay local for your review. PR reviews send diffs and check summaries to OpenAI and default to `gpt-5.4`; set `RADY_MODEL` to change it
 
-Check locally: `python3 -m unittest discover -s tests -v`.
-
-License: [MIT](LICENSE).
+[Existing installs and credentials](docs/UPGRADING.md) · [MIT](LICENSE)
