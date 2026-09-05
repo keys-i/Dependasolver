@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preview or install Dependasolver without a manually supplied PAT."""
+"""Set up Dependasolver and Rady GitHub Apps without a PAT."""
 
 import argparse
 import base64
@@ -22,7 +22,10 @@ from string import Template
 ROOT = Path(__file__).resolve().parent
 CLIENT_ID = "DEPENDASOLVER_APP_CLIENT_ID"
 PRIVATE_KEY = "DEPENDASOLVER_APP_PRIVATE_KEY"
-PERMISSIONS = {"administration": "read", "pull_requests": "read"}
+APP_SLUG = "DEPENDASOLVER_APP_SLUG"
+APP_OWNER = "keys-i"
+PERMISSIONS = {"administration": "read", "contents": "read", "checks": "read",
+               "statuses": "read", "pull_requests": "write"}
 REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}")
 
 
@@ -59,7 +62,7 @@ def local_path(directory, name):
 def local_files(directory, source, required):
     ref = f"{source[0]}/.github/workflows/solve.yml@{source[1]}"
     caller = (ROOT / "templates/dependency.solver.yml").read_text()
-    caller = caller.replace("__SOLVER_REF__", ref)
+    caller = caller.replace("__SOLVER_REF__", ref).replace("__SOURCE_REF__", "@".join(source))
     caller = caller.replace("__REQUIRED_CHECKS__", json.dumps(required).replace("'", "''"))
     files = {local_path(directory, ".github/workflows/dependasolver.yml"): caller}
     paths = [local_path(directory, f".github/dependabot.{ext}") for ext in ("yml", "yaml")]
@@ -133,8 +136,8 @@ def manifest(repo, callback, name):
     return {
         "name": name,
         "url": f"https://github.com/{repo}",
-        "description": "Dependabot updates without the babysitting, with compatibility checks and passing CI before auto-merge.",
-        "public": False,
+        "description": "PR reviews grounded in the diff and CI, with Dependasolver for dependency updates and Rady for everything else",
+        "public": True,
         "hook_attributes": {"active": False, "url": f"https://github.com/{repo}"},
         "redirect_url": callback,
         "default_permissions": PERMISSIONS,
@@ -166,14 +169,46 @@ def convert_manifest(code):
         raise RuntimeError("Could not complete App registration. Retry from GitHub's App settings.") from None
 
 
-def setup_page(title, content, nonce):
+def setup_page(title, content, nonce, identity="dependasolver"):
     return Template((ROOT / "templates/setup.html").read_text()).substitute(
         title=html.escape(title), content=content, nonce=html.escape(nonce, quote=True),
-        logo=base64.b64encode((ROOT / "assets/dependasolver.png").read_bytes()).decode(),
+        logo=base64.b64encode((ROOT / "assets" / f"{identity}.png").read_bytes()).decode(),
+        brand="Rady" if identity == "rady" else "Dependasolver",
     )
 
 
-def register_app(repo, owner_type):
+def require_app_owner(app):
+    owner = app.get("owner") or {}
+    if not isinstance(owner, dict) or str(owner.get("login", "")).lower() != APP_OWNER:
+        raise RuntimeError(f"The GitHub App must be registered under {APP_OWNER}; no credentials were changed.")
+
+
+def require_permissions(app):
+    actual = app.get("permissions")
+    if not isinstance(actual, dict) or any(actual.get(name) not in ({"read", "write"} if level == "read" else {"write"}) for name, level in PERMISSIONS.items()):
+        raise RuntimeError("The App needs Administration, Contents, Checks and Commit statuses read, plus Pull requests write. Update its permissions and approve the installation before retrying.")
+
+
+def public_app(slug):
+    if not isinstance(slug, str) or not re.fullmatch(r"[a-z0-9-]+", slug):
+        raise RuntimeError(f"Set {APP_SLUG} to your existing App's URL slug, or use --new-app --apply if you have no App yet.")
+    # An unauthenticated lookup verifies that the registration is public.
+    request = urllib.request.Request(
+        f"https://api.github.com/apps/{slug}", headers={"Accept": "application/vnd.github+json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.load(response)
+    except (urllib.error.URLError, ValueError):
+        raise RuntimeError("Could not verify the existing public App. Check its slug and make its registration public.") from None
+
+
+def register_app(repo, identity="dependasolver"):
+    owner_type = api(f"users/{APP_OWNER}").get("type")
+    if owner_type not in {"User", "Organization"}:
+        raise RuntimeError(f"Cannot register a GitHub App under {APP_OWNER}.")
+    if owner_type == "User" and api("user").get("login", "").lower() != APP_OWNER:
+        raise RuntimeError(f"Sign in to GitHub CLI and your browser as {APP_OWNER} before registering the App.")
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
     route = "/callback/" + secrets.token_urlsafe(24)
@@ -201,7 +236,7 @@ def register_app(repo, owner_type):
                 except ValueError:
                     self.send_error(400)
                     return
-                body = setup_page("App registered", "<p>Return to your terminal to finish installing Dependasolver.</p>", nonce)
+                body = setup_page("App registered", "<p>Return to your terminal to finish setup.</p>", nonce, identity)
             data = body.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -214,20 +249,24 @@ def register_app(repo, owner_type):
 
     with HTTPServer(("127.0.0.1", 0), Handler) as server:
         host = f"127.0.0.1:{server.server_port}"
-        app_name = "Dependasolver " + repo.split("/")[1][:12] + " " + secrets.token_hex(3)
-        settings = "settings/apps/new" if owner_type == "User" else f"organizations/{repo.split('/')[0]}/settings/apps/new"
+        app_name = "Rady" if identity == "rady" else "Dependasolver"
+        settings = "settings/apps/new" if owner_type == "User" else f"organizations/{APP_OWNER}/settings/apps/new"
         action = f"https://github.com/{settings}?state={urllib.parse.quote(state)}"
         config = manifest(repo, f"http://{host}{route}", app_name)
         form = setup_page("Connect your repository", (
-                f"<p>Create a private GitHub App for <strong>{html.escape(repo)}</strong> "
-                "to check dependency updates before auto-merge.</p>"
+                f"<p>Create a public GitHub App owned by <strong>{APP_OWNER}</strong> "
+                f"for <strong>{html.escape(repo)}</strong> "
+                "to review pull requests using their diff and CI results.</p>"
                 "<dl><div><dt>Administration</dt><dd>Read-only</dd></div>"
-                "<div><dt>Pull requests</dt><dd>Read-only</dd></div></dl>"
+                "<div><dt>Checks</dt><dd>Read-only</dd></div>"
+                "<div><dt>Contents</dt><dd>Read-only</dd></div>"
+                "<div><dt>Commit statuses</dt><dd>Read-only</dd></div>"
+                "<div><dt>Pull requests</dt><dd>Read and write</dd></div></dl>"
                 "<p>Your CI checks and review requirements still apply.</p>"
                 f'<form method="post" action="{html.escape(action, quote=True)}">'
                 f'<input type="hidden" name="manifest" value="{html.escape(json.dumps(config), quote=True)}">'
                 '<button type="submit">Continue to GitHub</button></form>'
-                '<p class="note">Select only this repository when GitHub asks where to install the App.</p>'), nonce)
+                f'<p class="note">Register under {APP_OWNER}, then select only this repository when GitHub asks where to install the App.</p>'), nonce, identity)
         url = f"http://{host}{start}"
         print(f"Open {url} to approve App registration in GitHub.")
         webbrowser.open(url)
@@ -240,7 +279,11 @@ def register_app(repo, owner_type):
     return convert_manifest(code)
 
 
-def credentials(repo, app):
+def credentials(repo, app, identity="dependasolver"):
+    prefix = identity.upper()
+    client_name, key_name, slug_name = (f"{prefix}_APP_{suffix}" for suffix in ("CLIENT_ID", "PRIVATE_KEY", "SLUG"))
+    require_app_owner(app)
+    require_permissions(app)
     client_id, pem, slug = (app.get(key) for key in ("client_id", "pem", "slug"))
     if (not isinstance(client_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", client_id)
             or not isinstance(pem, str) or "PRIVATE KEY-----" not in pem
@@ -250,11 +293,12 @@ def credentials(repo, app):
     try:
         with os.fdopen(fd, "w") as file:
             file.write(pem)
-        gh(["secret", "set", PRIVATE_KEY, "--repo", repo], data=pem)
-        gh(["variable", "set", CLIENT_ID, "--repo", repo, "--body", client_id])
+        gh(["secret", "set", key_name, "--repo", repo], data=pem)
+        gh(["variable", "set", client_name, "--repo", repo, "--body", client_id])
+        gh(["variable", "set", slug_name, "--repo", repo, "--body", slug])
     except BaseException:
         print(f"App private key retained with owner-only permissions at {recovery}.")
-        print(f"App Client ID: {client_id}. Complete both repository Actions credentials before retrying.")
+        print(f"App Client ID: {client_id}. App slug: {slug}. Complete the repository Actions credentials and slug before retrying.")
         raise
     else:
         Path(recovery).unlink()
@@ -263,7 +307,9 @@ def credentials(repo, app):
     input("Press Enter after completing that installation in GitHub: ")
 
 
-def install(repo, source, required, directory):
+def install(repo, source, required, directory, *, new_app=False, identity="dependasolver"):
+    prefix = identity.upper()
+    client_name, key_name, slug_name = (f"{prefix}_APP_{suffix}" for suffix in ("CLIENT_ID", "PRIVATE_KEY", "SLUG"))
     files = local_files(directory, source, required)
     info = api(f"repos/{repo}")
     if (info.get("full_name", "").lower() != repo.lower()
@@ -278,14 +324,23 @@ def install(repo, source, required, directory):
     branch = urllib.parse.quote(info["default_branch"], safe="")
     endpoint = f"repos/{repo}/branches/{branch}/protection"
     protection = api(endpoint, missing=True)
-    key = api(f"repos/{repo}/actions/secrets/{PRIVATE_KEY}", missing=True)
-    client = api(f"repos/{repo}/actions/variables/{CLIENT_ID}", missing=True)
+    key = None if new_app else api(f"repos/{repo}/actions/secrets/{key_name}", missing=True)
+    client = None if new_app else api(f"repos/{repo}/actions/variables/{client_name}", missing=True)
     if (key is None) != (client is None):
-        raise RuntimeError("Incomplete App setup: configure both Actions credentials, or remove the incomplete pair before retrying.")
+        raise RuntimeError("Incomplete App setup: configure both Actions credentials, or use --new-app --apply to register a new App.")
     if key is None:
-        credentials(repo, register_app(repo, owner_type))
+        if identity == "dependasolver":
+            credentials(repo, register_app(repo))
+        else:
+            credentials(repo, register_app(repo, identity), identity)
     else:
-        print("Reusing the repository's existing Dependasolver App credentials.")
+        slug = api(f"repos/{repo}/actions/variables/{slug_name}", missing=True)
+        app = public_app((slug or {}).get("value"))
+        require_app_owner(app)
+        require_permissions(app)
+        if app.get("client_id") != client.get("value"):
+            raise RuntimeError("The existing App slug and Client ID do not match; no credentials were changed.")
+        print(f"Reusing {app.get('name') or app['slug']} owned by {APP_OWNER}.")
     # Re-read policy after browser approval; preserve changes made during setup.
     protection = api(endpoint, missing=True)
     protect(endpoint, protection, required)
@@ -300,7 +355,7 @@ def install(repo, source, required, directory):
         with path.open("x") as file:
             file.write(content)
     print("Repository settings and App credentials are configured.")
-    print(f"To add the smiling App badge, upload {ROOT / 'assets/dependasolver.png'} in the App's Display information settings.")
+    print(f"App badge: {ROOT / 'assets' / (identity + '.png')}")
     print("Publish .github/workflows/dependasolver.yml to activate the solver.")
     print("The first workflow run verifies the App installation and protected checks.")
 
@@ -311,6 +366,8 @@ def main(argv=None):
     parser.add_argument("--solver-ref", required=True, type=source_ref)
     parser.add_argument("--checks", required=True, nargs="+")
     parser.add_argument("--directory", type=Path, default=Path.cwd())
+    parser.add_argument("--app", choices=["dependasolver", "rady"], default="dependasolver", help="Use separate Apps for the two bot identities")
+    parser.add_argument("--new-app", action="store_true", help="Register a new App and replace saved App credentials after registration succeeds.")
     parser.add_argument("--apply", action="store_true", help="Approve App setup, repository setting changes, and local caller creation.")
     args = parser.parse_args(argv)
     try:
@@ -318,9 +375,10 @@ def main(argv=None):
         files = local_files(args.directory, args.solver_ref, required)
         print(json.dumps({"repository": args.repo, "source": "@".join(args.solver_ref),
                           "required_checks": required, "files": [str(path) for path in files],
-                          "app_permissions": PERMISSIONS, "apply": args.apply}, indent=2))
+                          "app_owner": APP_OWNER, "app_public": True, "new_app": args.new_app,
+                          "app_permissions": PERMISSIONS, "identity": args.app, "apply": args.apply}, indent=2))
         if args.apply:
-            install(args.repo, args.solver_ref, required, args.directory)
+            install(args.repo, args.solver_ref, required, args.directory, new_app=args.new_app, identity=args.app)
         else:
             print("Preview complete. Add --apply to run setup.")
         return 0

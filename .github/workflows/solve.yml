@@ -1,63 +1,137 @@
-name: Dependency review
+name: Dependasolver and Rady
 
 on:
   workflow_call:
     inputs:
+      solver-ref:
+        description: Source repository and immutable commit, OWNER/REPO@SHA
+        required: true
+        type: string
       app-client-id:
         required: true
         type: string
+      rady-app-client-id:
+        type: string
+        default: ''
       required-checks:
         description: JSON array of required CI check names
         required: true
         type: string
+      model:
+        type: string
+        default: gpt-5.4
+      pr-number:
+        type: number
+        default: 0
     secrets:
       app-private-key:
+        required: true
+      rady-app-private-key:
+        required: false
+      openai-api-key:
         required: true
 
 permissions: {}
 
 concurrency:
-  group: dependasolver-${{ github.event.pull_request.number }}
+  group: rady-${{ github.event.pull_request.number || inputs.pr-number }}
   cancel-in-progress: true
 
 jobs:
-  auto-merge:
+  review:
     if: >-
-      github.event_name == 'pull_request_target' &&
-      github.event.pull_request.user.login == 'dependabot[bot]' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      !github.event.pull_request.draft
+      (github.event_name == 'pull_request_target' && !github.event.pull_request.draft) ||
+      (github.event_name == 'workflow_dispatch' && inputs.pr-number > 0)
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: write
       pull-requests: write
     steps:
-      # This privileged workflow never checks out or executes PR code.
-      - name: Clear previous auto-merge approval
-        if: github.event.pull_request.auto_merge != null
+      - name: Clear previous dependency auto-merge approval
+        if: github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.auto_merge != null
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: gh pr merge "$PR_URL" --disable-auto
+      - name: Validate trusted solver source
+        id: source
+        shell: bash
+        env:
+          SOLVER_REF: ${{ inputs.solver-ref }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOLVER_REF" =~ ^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@([a-f0-9]{40})$ ]]; then
+            echo 'solver-ref must be OWNER/REPO@40_CHARACTER_COMMIT_SHA' >&2
+            exit 1
+          fi
+          echo "repository=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          echo "sha=${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+      # Check out only the immutable solver source, never the PR or its scripts.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.source.outputs.repository }}
+          ref: ${{ steps.source.outputs.sha }}
+          persist-credentials: false
+      - name: Resolve PR author and commit
+        id: pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr-number }}
+        run: python3 rady.py resolve --repo "$GH_REPO" --pr "$PR_NUMBER"
+      - name: Require the selected App credentials
+        shell: bash
+        env:
+          DEPENDENCY: ${{ steps.pr.outputs.dependency }}
+          DEPENDASOLVER_ID: ${{ inputs.app-client-id }}
+          RADY_ID: ${{ inputs.rady-app-client-id }}
+        run: |
+          set -euo pipefail
+          if [[ "$DEPENDENCY" != true && ( -z "$RADY_ID" || "$RADY_ID" == "$DEPENDASOLVER_ID" ) ]]; then
+            echo 'Configure a separate Rady App to post normal PR reviews as Rady' >&2
+            exit 1
+          fi
       - name: Create repository-scoped GitHub App token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          client-id: ${{ inputs.app-client-id }}
-          private-key: ${{ secrets.app-private-key }}
+          client-id: ${{ steps.pr.outputs.dependency == 'true' && inputs.app-client-id || inputs.rady-app-client-id }}
+          private-key: ${{ steps.pr.outputs.dependency == 'true' && secrets.app-private-key || secrets.rady-app-private-key }}
           repositories: ${{ github.event.repository.name }}
           permission-administration: read
-          permission-pull-requests: read
+          permission-contents: read
+          permission-checks: read
+          permission-statuses: read
+          permission-pull-requests: write
       - name: Fetch verified Dependabot metadata
+        if: steps.pr.outputs.dependency == 'true' && github.event_name == 'pull_request_target'
         id: metadata
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
         with:
           compat-lookup: true
           github-token: ${{ steps.app-token.outputs.token }}
+      - name: Review the diff and current CI evidence
+        id: review
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          OPENAI_API_KEY: ${{ secrets.openai-api-key }}
+          RADY_MODEL: ${{ inputs.model }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr-number }}
+          REQUIRED_CHECKS: ${{ inputs.required-checks }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || steps.pr.outputs.head }}
+          SCORE: ${{ steps.metadata.outputs.compatibility-score }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          MAINTAINER_CHANGES: ${{ steps.metadata.outputs.maintainer-changes }}
+        run: python3 rady.py review --repo "$GH_REPO" --pr "$PR_NUMBER"
       - name: Require protected checks and enable auto-merge
         if: >-
+          steps.review.outputs.enable_auto_merge == 'true' &&
           fromJSON(steps.metadata.outputs.compatibility-score || '0') >= 95 &&
           fromJSON(steps.metadata.outputs.compatibility-score || '0') <= 100 &&
           contains(fromJSON('["version-update:semver-patch","version-update:semver-minor"]'), steps.metadata.outputs.update-type) &&
@@ -77,68 +151,3 @@ jobs:
           GH_TOKEN="${APP_TOKEN:?Missing GitHub App installation token}" gh api "repos/$GH_REPO/branches/$branch/protection" |
             jq -e --argjson required "$REQUIRED_CHECKS" '($required | type == "array" and length > 0 and all(.[]; type == "string" and test("\\S"))) and .enforce_admins.enabled == true and (.required_status_checks | .strict == true and ([.contexts[]?, .checks[]?.context] | unique | contains($required)))' > /dev/null
           gh pr merge "$PR_URL" --auto --squash --match-head-commit "$HEAD_SHA"
-      - name: Review low compatibility score
-        if: fromJSON(steps.metadata.outputs.compatibility-score || '0') < 80
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          SCORE: ${{ steps.metadata.outputs.compatibility-score || 'unknown' }}
-          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type || 'unknown' }}
-          MAINTAINER_CHANGES: ${{ steps.metadata.outputs.maintainer-changes || 'unknown' }}
-        run: |
-          set -euo pipefail
-          marker='<!-- rady-compatibility-review -->'
-          if gh pr view "$PR_URL" --json comments,reviews --jq '[.comments[], .reviews[]] | .[].body' | grep -Fq "$marker"; then
-            exit 0
-          fi
-          body=$(printf '%s\n' "$marker" '### Dependasolver review' '' 'Reviewed. This looks like a routine dependency update, but the compatibility signal needs a closer look before merge.' '' "- Compatibility score: **$SCORE/100** (below 80)" "- Update type: \`$UPDATE_TYPE\`" "- Maintainer changes: \`$MAINTAINER_CHANGES\`" '' 'Blocker before merge: check the release notes, dependency compatibility, and every required CI check. Once those are green and the score is understood, this can be merged manually.' '' 'Review: LOW confidence, hold merge until the above is fixed.')
-          gh pr review "$PR_URL" --comment --body "$body"
-
-      - name: Approve safe dependency update
-        if: >-
-          fromJSON(steps.metadata.outputs.compatibility-score || '0') >= 95 &&
-          fromJSON(steps.metadata.outputs.compatibility-score || '0') <= 100 &&
-          contains(fromJSON('["version-update:semver-patch","version-update:semver-minor"]'), steps.metadata.outputs.update-type) &&
-          steps.metadata.outputs.maintainer-changes == 'false'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-        run: |
-          set -euo pipefail
-          marker='<!-- dependasolver-approval -->'
-          if gh pr view "$PR_URL" --json reviews --jq '.reviews[].body' | grep -Fq "$marker"; then
-            exit 0
-          fi
-          gh pr review "$PR_URL" --approve --body "$marker
-
-          Reviewed. This is a clean, low-risk dependency update with a strong compatibility score and no maintainer changes. Required checks are still the final gate. No concerns — approving."
-
-  rady-review:
-    if: >-
-      github.event_name == 'pull_request_target' &&
-      github.event.pull_request.user.login != 'dependabot[bot]' &&
-      !github.event.pull_request.draft
-    runs-on: ubuntu-24.04
-    permissions:
-      pull-requests: write
-    steps:
-      - name: Review normal pull request
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-        run: |
-          set -euo pipefail
-          marker='<!-- rady-review -->'
-          if gh pr view "$PR_URL" --json comments,reviews --jq '[.comments[], .reviews[]] | .[].body' | grep -Fq "$marker"; then
-            exit 0
-          fi
-          gh pr review "$PR_URL" --comment --body "$marker
-
-          ### Rady review
-
-          Reviewed. This looks like a straightforward change from the diff available to the workflow. Nothing jumps out as risky, but the required checks still need to be green before merge.
-
-          Review: LOW risk, approve after CI is green."
