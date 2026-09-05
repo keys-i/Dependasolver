@@ -1,4 +1,4 @@
-name: Rady dependency solver
+name: Dependency review
 
 on:
   workflow_call:
@@ -92,5 +92,31 @@ jobs:
           if gh pr view "$PR_URL" --json comments,reviews --jq '[.comments[], .reviews[]] | .[].body' | grep -Fq "$marker"; then
             exit 0
           fi
-          body=$(printf '%s\n' "$marker" '### Rady compatibility review' '' "This Dependabot update scored **$SCORE/100**, below Rady's 80-point review threshold, so auto-merge is disabled." '' "- Update type: \`$UPDATE_TYPE\`" "- Maintainer changes: \`$MAINTAINER_CHANGES\`" '' 'Please check the release notes, dependency compatibility, and required CI checks before merging manually.')
+          body=$(printf '%s\n' "$marker" '### Dependasolver compatibility review' '' "This Dependabot update scored **$SCORE/100**, below Dependasolver's 80-point review threshold, so auto-merge is disabled." '' "- Update type: \`$UPDATE_TYPE\`" "- Maintainer changes: \`$MAINTAINER_CHANGES\`" '' 'Please check the release notes, dependency compatibility, and required CI checks before merging manually.')
           gh pr review "$PR_URL" --comment --body "$body"
+
+  rady-review:
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Review normal pull request
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -euo pipefail
+          marker='<!-- rady-review -->'
+          if gh pr view "$PR_URL" --json comments,reviews --jq '[.comments[], .reviews[]] | .[].body' | grep -Fq "$marker"; then
+            exit 0
+          fi
+          gh pr review "$PR_URL" --comment --body "$marker
+
+          ### Rady review
+
+          Automated review requested. Please check the changed files and required CI checks before merging."
