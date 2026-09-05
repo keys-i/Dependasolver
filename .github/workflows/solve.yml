@@ -1,4 +1,4 @@
-name: bRad dependency solver
+name: Rady dependency solver
 
 on:
   workflow_call:
@@ -88,9 +88,9 @@ jobs:
           MAINTAINER_CHANGES: ${{ steps.metadata.outputs.maintainer-changes || 'unknown' }}
         run: |
           set -euo pipefail
-          marker='<!-- brad-compatibility-review -->'
+          marker='<!-- rady-compatibility-review -->'
           if gh pr view "$PR_URL" --json comments,reviews --jq '[.comments[], .reviews[]] | .[].body' | grep -Fq "$marker"; then
             exit 0
           fi
-          body=$(printf '%s\n' "$marker" '### bRad compatibility review' '' "This Dependabot update scored **$SCORE/100**, below bRad's 80-point review threshold, so auto-merge is disabled." '' "- Update type: \`$UPDATE_TYPE\`" "- Maintainer changes: \`$MAINTAINER_CHANGES\`" '' 'Please check the release notes, dependency compatibility, and required CI checks before merging manually.')
+          body=$(printf '%s\n' "$marker" '### Rady compatibility review' '' "This Dependabot update scored **$SCORE/100**, below Rady's 80-point review threshold, so auto-merge is disabled." '' "- Update type: \`$UPDATE_TYPE\`" "- Maintainer changes: \`$MAINTAINER_CHANGES\`" '' 'Please check the release notes, dependency compatibility, and required CI checks before merging manually.')
           gh pr review "$PR_URL" --comment --body "$body"
